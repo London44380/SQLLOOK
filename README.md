@@ -26,7 +26,10 @@ directory, a unix socket, one `mariadbd` process — entirely under
 `~/.local/share/sqllook/`. It does not touch any other database or
 service on your machine:
 
-- No sudo, no systemd, no system package configuration changes.
+- No sudo, no systemd, no system package configuration changes. Run it
+  as your normal user: it refuses to start as root / with `sudo`, because
+  the private instance lives under the home directory of whoever runs it
+  (`/root` under sudo) and MariaDB itself refuses to run as root.
 - No TCP port opened for the database (`--skip-networking`, unix socket
   only).
 - The web UI binds to `127.0.0.1` only.
@@ -57,7 +60,8 @@ python3 sqllook.py import /path/to/dump.sql
 python3 sqllook.py import /path/to/dump.sql --name mydb
 
 # Re-import, replacing an existing database of the same name
-python3 sqllook.py import /path/to/dump.sql --replace
+# (--replace requires --name, see Limitations)
+python3 sqllook.py import /path/to/dump.sql --name mydb --replace
 
 # Start the web UI
 python3 sqllook.py serve
@@ -97,6 +101,16 @@ specifically to avoid this. If a dump doesn't use that marker format (a
 plain single-database dump), it's imported as-is — which is safe in that
 case, since such dumps don't touch the `mysql` schema.
 
+## A note on `DEFINER` clauses
+
+Dumps often create triggers, views and routines with a clause such as
+``DEFINER=`root`@`localhost` ``. The import account is deliberately
+unprivileged (no `SUPER` / `SET USER`), so MariaDB would reject them
+(`ERROR 1227`) and stop the import halfway. Since this is a read-only
+browser, sqllook removes the `DEFINER=...` clause from DDL lines while
+streaming the dump (data rows are never modified); the objects are then
+created under the import account instead.
+
 ## Limitations
 
 - MySQL/MariaDB dump syntax only (not PostgreSQL, SQLite, etc.).
@@ -124,8 +138,8 @@ case, since such dumps don't touch the `mysql` schema.
 python3 -m unittest test_sqllook -v
 ```
 
-Pure logic tests (query/identifier validation, dump parsing) on
-synthetic fixtures — no database connection required.
+Pure logic tests (query/identifier validation, dump parsing, `DEFINER`
+stripping) on synthetic fixtures — no database connection required.
 
 ## License
 
