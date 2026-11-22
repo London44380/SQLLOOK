@@ -164,5 +164,26 @@ class ExtractDatabaseSection(unittest.TestCase):
             dump.unlink()
 
 
+class StripDefiners(unittest.TestCase):
+    def test_strips_trigger_definer_versioned_comment(self):
+        line = b"/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER t BEFORE INSERT ON x FOR EACH ROW SET NEW.a=1 */;;\n"
+        out = d.strip_definers(line)
+        self.assertNotIn(b"DEFINER", out)
+        self.assertIn(b"TRIGGER t BEFORE INSERT", out)
+
+    def test_strips_plain_create_definer_view(self):
+        line = b"CREATE DEFINER=`app`@`%` SQL SECURITY DEFINER VIEW v AS SELECT 1;\n"
+        out = d.strip_definers(line)
+        self.assertNotIn(b"DEFINER=", out)
+        self.assertIn(b"SQL SECURITY DEFINER VIEW v", out)
+
+    def test_leaves_data_rows_untouched(self):
+        for line in (
+            b"('a','DEFINER=`root`@`localhost`',1),\n",
+            b"INSERT INTO t VALUES ('CREATE DEFINER=`root`@`localhost` x');\n",
+        ):
+            self.assertEqual(d.strip_definers(line), line)
+
+
 if __name__ == "__main__":
     unittest.main()

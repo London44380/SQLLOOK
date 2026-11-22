@@ -24,6 +24,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -414,6 +415,46 @@ def extract_database_section(dump_path: Path, name: str):
     return tmp
 
 
+_DEFINER_RE = re.compile(
+    rb"\s*DEFINER\s*=\s*(?:`[^`]*`|'[^']*'|[^\s@`']+)@(?:`[^`]*`|'[^']*'|[^\s*`']+)",
+    re.IGNORECASE,
+)
+
+
+def strip_definers(line: bytes) -> bytes:
+    """Drop DEFINER=`user`@`host` from DDL lines (triggers, views, routines).
+
+    The unprivileged 'importer' account has no SET USER/SUPER, so MySQL
+    refuses any object created on behalf of another account (typically
+    root@localhost) with ERROR 1227. For a read-only browser the definer
+    is irrelevant. Only DDL-looking lines are touched, so a data row that
+    happens to contain the text is never altered.
+    """
+    head = line[:12].lstrip().upper()
+    if not (head.startswith(b"/*!") or head.startswith(b"CREATE")):
+        return line
+    return _DEFINER_RE.sub(b"", line)
+
+
+def run_import_stream(source, import_args, env):
+    """Feed `source` (binary file) to the mysql client line by line through
+    strip_definers, without writing a second copy of a possibly huge dump."""
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(
+            import_args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=err, env=env,
+        )
+        try:
+            for line in source:
+                proc.stdin.write(strip_definers(line))
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass  # client stopped at the first error; its stderr says why
+        returncode = proc.wait()
+        err.seek(0)
+        return returncode, err.read()
+
+
 def cmd_import(args):
     dump_path = Path(args.dump).expanduser()
     if not dump_path.is_file():
@@ -466,9 +507,8 @@ def cmd_import(args):
             MYSQL_CLIENT, f"--socket={SOCKET}", "-u", "importer", "--sandbox",
             "--local-infile=0", name,
         ]
-        proc = subprocess.run(
-            import_args, stdin=source, capture_output=True,
-            env={"MYSQL_PWD": importer_password()},
+        returncode, stderr_bytes = run_import_stream(
+            source, import_args, {"MYSQL_PWD": importer_password()},
         )
         source.close()
     finally:
@@ -479,8 +519,8 @@ def cmd_import(args):
         # the account (same reasoning as reset_viewer_user()).
         reset_importer_user()
 
-    if proc.returncode != 0:
-        die(proc.stderr.decode(errors="replace"))
+    if returncode != 0:
+        die(stderr_bytes.decode(errors="replace"))
 
     add_to_manifest(name)
     # A dump can be a full-instance dump that rewrites the mysql schema
