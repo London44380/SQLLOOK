@@ -18,6 +18,7 @@ import argparse
 import functools
 import html
 import json
+import os
 import re
 import secrets
 import shutil
@@ -788,6 +789,11 @@ def cmd_serve(args):
 
 
 def main():
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        die("don't run sqllook as root / with sudo - it stores its private instance "
+            "under the home directory of whoever runs it, so sudo puts it under "
+            "/root instead of your own account, and MariaDB then refuses to start "
+            "as root. Run it as your normal user.")
     print_banner()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
